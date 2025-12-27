@@ -3,102 +3,74 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 
 export const register = async (req, res) => {
-  try {
-    const { name, email, password } = req.body;
+  const { name, email, password } = req.body;
 
-    // 1️⃣ Validate
-    if (!name || !email || !password) {
-      return res.status(400).json({
-        message: "សូមបញ្ចូល Name, Email និង Password"
-      });
-    }
+  const hash = await bcrypt.hash(password, 10);
 
-    // 2️⃣ Check email exists
-    const [exists] = await db.query(
-      "SELECT id FROM users WHERE email = ?",
-      [email]
-    );
+  // default role = guest
+  const [role] = await db.query(
+    "SELECT id FROM roles WHERE name='guest'"
+  );
 
-    if (exists.length) {
-      return res.status(422).json({
-        message: "Email នេះបានប្រើរួចហើយ"
-      });
-    }
+  await db.query(
+    "INSERT INTO users (name,email,password,role_id) VALUES (?,?,?,?)",
+    [name, email, hash, role[0].id]
+  );
 
-    // 3️⃣ Hash password
-    const hash = await bcrypt.hash(password, 10);
-
-    // 4️⃣ Insert user
-    await db.query(
-      "INSERT INTO users (name, email, password) VALUES (?, ?, ?)",
-      [name, email, hash]
-    );
-
-    res.status(201).json({
-      message: "Register success"
-    });
-
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({
-      message: "Server error"
-    });
-  }
+  res.json({ message: "Register success" });
 };
 
+
 export const login = async (req, res) => {
-  try {
-    const { email, password } = req.body;
+  const { email, password } = req.body;
 
-    // 1️⃣ Validate
-    if (!email || !password) {
-      return res.status(400).json({
-        message: "សូមបញ្ចូល Email និង Password"
-      });
-    }
+  // 1️⃣ Get user + role
+  const [users] = await db.query(`
+    SELECT u.id, u.name, u.email, u.password, r.name AS role
+    FROM users u
+    JOIN roles r ON r.id = u.role_id
+    WHERE u.email = ?
+  `, [email]);
 
-    // 2️⃣ Find user
-    const [users] = await db.query(
-      "SELECT * FROM users WHERE email = ?",
-      [email]
-    );
-
-    if (!users.length) {
-      return res.status(401).json({
-        message: "Email មិនត្រឹមត្រូវ"
-      });
-    }
-
-    const user = users[0];
-
-    // 3️⃣ Compare password
-    const isMatch = await bcrypt.compare(password, user.password);
-
-    if (!isMatch) {
-      return res.status(401).json({
-        message: "Password មិនត្រឹមត្រូវ"
-      });
-    }
-
-    // 4️⃣ Create token
-    const token = jwt.sign(
-      { id: user.id },
-      process.env.JWT_SECRET,
-      { expiresIn: "1d" }
-    );
-
-    res.json({
-      token,
-      user: {
-        id: user.id,
-        name: user.name
-      }
-    });
-
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({
-      message: "Server error"
-    });
+  if (!users.length) {
+    return res.status(401).json({ message: "User not found" });
   }
+
+  const user = users[0];
+
+  // 2️⃣ Check password
+  const match = await bcrypt.compare(password, user.password);
+  if (!match) {
+    return res.status(401).json({ message: "Wrong password" });
+  }
+
+  // 3️⃣ Get permissions by role
+  const [permissions] = await db.query(`
+    SELECT p.name
+    FROM permissions p
+    JOIN role_permission rp ON rp.permission_id = p.id
+    JOIN roles r ON r.id = rp.role_id
+    WHERE r.name = ?
+  `, [user.role]);
+
+  const permissionNames = permissions.map(p => p.name);
+
+  // 4️⃣ Create token
+  const token = jwt.sign(
+    { id: user.id, role: user.role },
+    process.env.JWT_SECRET,
+    { expiresIn: "1d" }
+  );
+
+  // 5️⃣ Return user + permissions
+  res.json({
+    token,
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      permissions: permissionNames
+    }
+  });
 };
