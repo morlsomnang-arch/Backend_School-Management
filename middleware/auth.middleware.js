@@ -1,34 +1,40 @@
 import jwt from "jsonwebtoken"
-import { db } from "../config/db.js"
+import { User } from "../model/Auth/User.js"
+import { Role } from "../model/Auth/Role.js"
+import { Permission } from "../model/Auth/Permission.js"
 
 export const auth = async (req, res, next) => {
   try {
-    const token = req.headers.authorization?.split(" ")[1]
+    const authHeader = req.headers.authorization
+    if (!authHeader) return res.sendStatus(401)
+
+    const token = authHeader.split(" ")[1]
     if (!token) return res.sendStatus(401)
-
     const decoded = jwt.verify(token, process.env.JWT_SECRET)
+    const user = await User.findByPk(decoded.id, {
+      attributes: ['id', 'name', 'email'],
+      include: [
+        {
+          model: Role,
+          attributes: ['name'],
+          include: [
+            {
+              model: Permission,
+              attributes: ['name'],
+              through: { attributes: [] } 
+            }
+          ]
+        }
+      ]
+    })
 
-    const [users] = await db.query(`
-      SELECT u.id, u.name, r.name AS role
-      FROM users u
-      JOIN roles r ON r.id = u.role_id
-      WHERE u.id = ?
-    `, [decoded.id])
-
-    if (!users.length) return res.sendStatus(401)
-
-    // 🔽 GET PERMISSIONS
-    const [permissions] = await db.query(`
-      SELECT p.name
-      FROM permissions p
-      JOIN role_permission rp ON rp.permission_id = p.id
-      JOIN roles r ON r.id = rp.role_id
-      WHERE r.name = ?
-    `, [users[0].role])
-
+    if (!user) return res.sendStatus(401)
     req.user = {
-      ...users[0],
-      permissions: permissions.map(p => p.name)
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.Role.name,
+      permissions: user.Role.Permissions.map(p => p.name)
     }
 
     next()
